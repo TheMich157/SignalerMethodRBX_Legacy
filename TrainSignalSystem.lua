@@ -48,14 +48,14 @@ local BLACK = Color3.fromRGB(0, 0, 0)  -- Off
 -- Create a new Semaphore instance
 function Semaphore.new(name, light1, light2, light3, light4)
 	local self = setmetatable({}, Semaphore)
-	
+
 	self.Name = name or "Semaphore1"
 	self.Light1 = light1  -- Top light (Green when set)
 	self.Light2 = light2  -- Second light (Yellow)
 	self.Light3 = light3  -- Third light (Red - main stop signal)
 	self.Light4 = light4  -- Fourth light (Yellow)
 	self.CurrentState = "STOP"  -- Track current state
-	
+
 	return self
 end
 
@@ -65,18 +65,18 @@ local function SetLightColor(light, color, semaphoreName, lightNumber)
 		DebugWarn("SetLightColor: Light is nil")
 		return false
 	end
-	
+
 	if not light:IsA("BasePart") then
 		DebugWarn("SetLightColor: Light '%s' is not a BasePart (type: %s)", light.Name, light.ClassName)
 		return false
 	end
-	
+
 	-- Safety: Ensure part is anchored to prevent movement
 	if not light.Anchored then
 		DebugWarn("Light '%s' is not anchored! Anchoring to prevent movement.", light.Name)
 		light.Anchored = true
 	end
-	
+
 	-- Set part color and material
 	local colorName = "UNKNOWN"
 	if color == RED then
@@ -88,9 +88,9 @@ local function SetLightColor(light, color, semaphoreName, lightNumber)
 	elseif color == BLACK then
 		colorName = "BLACK (OFF)"
 	end
-	
+
 	light.Color = color
-	
+
 	if color == BLACK then
 		-- When off, make it dark/plastic
 		light.Material = Enum.Material.Plastic
@@ -100,7 +100,7 @@ local function SetLightColor(light, color, semaphoreName, lightNumber)
 		light.Material = Enum.Material.Neon
 		light.Transparency = 0  -- Fully visible when on
 	end
-	
+
 	DebugPrint("Set light '%s' (Light%d) to %s on semaphore '%s'", light.Name, lightNumber or 0, colorName, semaphoreName or "unknown")
 	return true
 end
@@ -234,7 +234,7 @@ DebugPrint("Command map initialized with %d commands and %d total aliases",
 function InitializeSemaphores()
 	DebugPrint("Starting semaphore initialization...")
 	DebugPrint("Searching for semaphores in workspace.Semaphores folder...")
-	
+
 	-- Look for Semaphores folder
 	local semaphoresFolder = workspace:FindFirstChild("Semaphores")
 	if not semaphoresFolder then
@@ -243,9 +243,9 @@ function InitializeSemaphores()
 		DebugWarn("Semaphores folder missing - cannot initialize signals")
 		return
 	end
-	
+
 	DebugPrint("Found Semaphores folder in workspace")
-	
+
 	-- Find all semaphore models in the Semaphores folder
 	local semaphoreCount = 0
 	for _, child in pairs(semaphoresFolder:GetChildren()) do
@@ -253,19 +253,19 @@ function InitializeSemaphores()
 		if child:IsA("Model") or child:IsA("Folder") then
 			local semName = child.Name
 			DebugPrint("Checking potential semaphore: '%s'", semName)
-			
+
 			local light1 = child:FindFirstChild("Light1")
 			local light2 = child:FindFirstChild("Light2")
 			local light3 = child:FindFirstChild("Light3")
 			local light4 = child:FindFirstChild("Light4")
-			
+
 			DebugPrint("Light search results for '%s' - Light1: %s, Light2: %s, Light3: %s, Light4: %s",
 				semName,
 				light1 and light1.Name or "NOT FOUND",
 				light2 and light2.Name or "NOT FOUND",
 				light3 and light3.Name or "NOT FOUND",
 				light4 and light4.Name or "NOT FOUND")
-		
+
 			if light1 and light2 and light3 and light4 then
 				-- Verify all lights are BaseParts
 				local allValid = true
@@ -275,7 +275,7 @@ function InitializeSemaphores()
 						allValid = false
 					end
 				end
-				
+
 				if allValid then
 					-- Safety: Ensure all lights are anchored to prevent movement
 					local unanchoredLights = {}
@@ -286,25 +286,25 @@ function InitializeSemaphores()
 							DebugPrint("Anchored light '%s' (Light%d) to prevent movement in '%s'", light.Name, i, semName)
 						end
 					end
-					
+
 					if #unanchoredLights > 0 then
 						warn(string.format("[Train Signal] ⚠ Some lights were unanchored in '%s' and have been anchored: %s", semName, table.concat(unanchoredLights, ", ")))
 					end
-					
+
 					-- Register semaphore by its folder/model name
 					semaphores[semName] = Semaphore.new(semName, light1, light2, light3, light4)
-					
+
 					-- Register first semaphore as default if none exists
 					if not semaphores["default"] then
 						semaphores["default"] = semaphores[semName]
 						DebugPrint("Registered '%s' as default semaphore", semName)
 					end
-					
+
 					-- If it's "Semaphore1", also register as lowercase for compatibility
 					if semName == "Semaphore1" or semName == "semaphore1" then
 						semaphores["semaphore1"] = semaphores[semName]
 					end
-					
+
 					DebugPrint("Semaphore created successfully. Initializing to STOP state...")
 					semaphores[semName]:SetStop()  -- Initialize to red (stop) by default
 					print(string.format("[Train Signal] ✓ %s initialized successfully (default: STOP)", semName))
@@ -318,14 +318,14 @@ function InitializeSemaphores()
 			end
 		end
 	end
-	
+
 	if semaphoreCount == 0 then
 		warn("[Train Signal] ✗ No valid semaphores found in Semaphores folder!")
 		warn("[Train Signal] Expected structure: workspace.Semaphores.Semaphore1 (with Light1, Light2, Light3, Light4)")
 	else
 		DebugPrint("Successfully initialized %d semaphore(s)", semaphoreCount)
 	end
-	
+
 	-- All semaphores are now automatically discovered from the Semaphores folder
 	-- To add more semaphores, just add more models/folders to workspace.Semaphores
 	-- Each should contain Light1, Light2, Light3, Light4 as BaseParts
@@ -337,10 +337,10 @@ local function SendMessage(player, message, color)
 		print(message)
 		return
 	end
-	
+
 	-- Send to chat using RemoteEvent (since SetCore only works in LocalScript)
 	local chatRemote = ReplicatedStorage:FindFirstChild("TrainSignalChatMessage")
-	
+
 	if not chatRemote then
 		-- Create RemoteEvent for chat messages
 		chatRemote = Instance.new("RemoteEvent")
@@ -348,10 +348,10 @@ local function SendMessage(player, message, color)
 		chatRemote.Parent = ReplicatedStorage
 		DebugPrint("Created TrainSignalChatMessage RemoteEvent")
 	end
-	
+
 	-- Fire to client (which will display in chat via LocalScript)
 	chatRemote:FireClient(player, message, color or Color3.fromRGB(100, 200, 255))
-	
+
 	-- Also print for Output window
 	print("[Train Signal → " .. player.Name .. "] " .. message)
 end
@@ -364,7 +364,7 @@ local function SendChatLines(player, lines, color)
 		end
 		return
 	end
-	
+
 	-- Send each line as a separate chat message
 	for _, line in ipairs(lines) do
 		if line and line ~= "" then
@@ -395,7 +395,7 @@ local function ShowHelp(player)
 		"  !stop Semaphore1       - Set Semaphore1 to STOP",
 		"  !yellow Semaphore1     - Set Semaphore1 to YELLOW"
 	}
-	
+
 	-- List available semaphores (show unique ones only)
 	local uniqueNames = {}
 	local seen = {}
@@ -416,10 +416,10 @@ local function ShowHelp(player)
 		table.insert(helpLines, "Available semaphores: " .. table.concat(uniqueNames, ", "))
 	end
 	table.insert(helpLines, "═══════════════════════════════════════")
-	
+
 	-- Print to Output
 	print("\n" .. table.concat(helpLines, "\n") .. "\n")
-	
+
 	-- Send to chat
 	SendChatLines(player, helpLines, Color3.fromRGB(100, 200, 255))
 end
@@ -429,7 +429,7 @@ local function ListSemaphores(player)
 	-- Get unique semaphores (by their actual Name, not registration keys)
 	local uniqueSemaphores = {}
 	local registrationKeys = {}
-	
+
 	for key, sem in pairs(semaphores) do
 		-- Use sem.Name as the unique identifier
 		if not uniqueSemaphores[sem.Name] then
@@ -439,7 +439,7 @@ local function ListSemaphores(player)
 		-- Store all registration keys for this semaphore
 		table.insert(registrationKeys[sem.Name], key)
 	end
-	
+
 	-- Build display list
 	local semDisplayList = {}
 	for semName, keys in pairs(registrationKeys) do
@@ -468,10 +468,10 @@ local function ListSemaphores(player)
 			table.insert(semDisplayList, primaryKey)
 		end
 	end
-	
+
 	-- Sort alphabetically
 	table.sort(semDisplayList)
-	
+
 	if #semDisplayList == 0 then
 		local msg = "[Train Signal] No semaphores found."
 		SendMessage(player, msg)
@@ -483,14 +483,14 @@ local function ListSemaphores(player)
 			table.concat(semDisplayList, ", "),
 			"═══════════════════════════════════════"
 		}
-		
+
 		-- Print to Output
 		local outputMsg = "[Train Signal] Available semaphores: " .. table.concat(semDisplayList, ", ")
 		print(outputMsg)
-		
+
 		-- Send to chat
 		SendChatLines(player, listLines, Color3.fromRGB(150, 255, 150))
-		
+
 		DebugPrint("List command executed - showing %d unique semaphore(s)", #semDisplayList)
 	end
 end
@@ -498,15 +498,15 @@ end
 -- Parse command from message
 local function ParseCommand(message, playerName)
 	DebugPrint("Parsing command from player '%s': '%s'", playerName or "unknown", message)
-	
+
 	message = message:gsub("%s+", " "):match("^%s*(.-)%s*$")  -- Trim whitespace
 	local originalMessage = message  -- Keep original for semaphore name matching
 	local lowerMessage = string.lower(message)
-	
+
 	-- Check if message starts with ! or is a direct command
 	local prefix = ""
 	local cmdText = ""
-	
+
 	if lowerMessage:match("^!") then
 		prefix = "!"
 		cmdText = lowerMessage:sub(2)  -- Remove ! (lowercase)
@@ -516,39 +516,39 @@ local function ParseCommand(message, playerName)
 		cmdText = lowerMessage
 		DebugPrint("Command without ! prefix")
 	end
-	
+
 	-- Split command and arguments (using ORIGINAL message to preserve case for semaphore name)
 	local originalCmdText = originalMessage:match("^!") and originalMessage:sub(2) or originalMessage
 	local originalParts = {}
 	for part in originalCmdText:gmatch("%S+") do
 		table.insert(originalParts, part)
 	end
-	
+
 	-- Split lowercase for command matching
 	local parts = {}
 	for part in cmdText:gmatch("%S+") do
 		table.insert(parts, part)
 	end
-	
+
 	if #parts == 0 then
 		DebugPrint("No command parts found")
 		return nil, nil
 	end
-	
+
 	local command = parts[1]  -- Command (lowercase)
 	local semaphoreName = nil
-	
+
 	DebugPrint("Command parsed: '%s' with %d parts", command, #parts)
-	
+
 	-- Check if second part is a semaphore name (use ORIGINAL case)
 	if #parts > 1 and #originalParts > 1 then
 		local requestedName = originalParts[2]  -- Use original case!
-		
+
 		-- Try exact match first (case-sensitive)
 		if semaphores[requestedName] then
 			semaphoreName = requestedName
 			DebugPrint("Semaphore name specified (exact match): '%s'", semaphoreName)
-		-- Try case-insensitive match
+			-- Try case-insensitive match
 		else
 			-- Check all registered semaphore names (case-insensitive)
 			for registeredName, _ in pairs(semaphores) do
@@ -558,13 +558,13 @@ local function ParseCommand(message, playerName)
 					break
 				end
 			end
-			
+
 			if not semaphoreName then
 				DebugPrint("Second part '%s' is not a valid semaphore name", requestedName)
 			end
 		end
 	end
-	
+
 	return command, semaphoreName
 end
 
@@ -572,25 +572,25 @@ end
 local function ProcessCommand(command, semaphoreName, player)
 	command = string.lower(command or "")
 	local playerName = player and player.Name or "unknown"
-	
+
 	DebugPrint("Processing command '%s' for semaphore '%s' by player '%s'", 
 		command, semaphoreName or "default", playerName)
-	
+
 	-- Resolve alias
 	local resolvedCmd = aliasMap[command]
 	if not resolvedCmd then
 		DebugWarn("Unknown command '%s' from player '%s'", command, playerName)
 		return false, "Unknown command: !" .. command .. ". Type !help for available commands."
 	end
-	
+
 	DebugPrint("Command '%s' resolved to '%s'", command, resolvedCmd)
-	
+
 	local cmdData = commandMap[resolvedCmd]
 	if not cmdData then
 		DebugWarn("Command data not found for '%s'", resolvedCmd)
 		return false, "Command data not found: " .. resolvedCmd
 	end
-	
+
 	-- Handle special commands that don't need semaphore
 	if resolvedCmd == "help" then
 		DebugPrint("Showing help to player '%s'", playerName)
@@ -601,11 +601,11 @@ local function ProcessCommand(command, semaphoreName, player)
 		ListSemaphores(player)
 		return true, "Semaphores listed"
 	end
-	
+
 	-- Get semaphore (default to "Semaphore1" if not specified)
 	local semName = semaphoreName or "Semaphore1"
 	local sem = semaphores[semName]
-	
+
 	-- Try case-insensitive lookup if exact match failed
 	if not sem and semaphoreName then
 		-- Check all registered semaphore names (case-insensitive)
@@ -618,7 +618,7 @@ local function ProcessCommand(command, semaphoreName, player)
 			end
 		end
 	end
-	
+
 	-- Try lowercase if still not found (for backward compatibility)
 	if not sem and semaphoreName then
 		sem = semaphores[string.lower(semaphoreName)]
@@ -627,7 +627,7 @@ local function ProcessCommand(command, semaphoreName, player)
 			DebugPrint("Found semaphore via lowercase match: '%s'", semName)
 		end
 	end
-	
+
 	-- Final fallback: try default semaphore
 	if not sem then
 		if semaphoreName == "default" or not semaphoreName then
@@ -652,9 +652,9 @@ local function ProcessCommand(command, semaphoreName, player)
 			semName, table.concat(availableSems, ", "))
 		return false, "Semaphore '" .. semName .. "' not found. Use !list to see available semaphores."
 	end
-	
+
 	DebugPrint("Found semaphore '%s' (%s)", semName, sem.Name)
-	
+
 	-- Execute command
 	local methodName = cmdData.method
 	if sem[methodName] then
@@ -662,7 +662,7 @@ local function ProcessCommand(command, semaphoreName, player)
 		local success, err = pcall(function()
 			sem[methodName](sem)
 		end)
-		
+
 		if success then
 			DebugPrint("Command executed successfully")
 			return true, "Signal '" .. sem.Name .. "' set to " .. resolvedCmd:upper()
@@ -679,20 +679,20 @@ end
 -- Chat command handler
 Players.PlayerAdded:Connect(function(player)
 	DebugPrint("Player '%s' joined - setting up chat handler", player.Name)
-	
+
 	player.Chatted:Connect(function(message)
 		DebugPrint("Player '%s' sent chat message: '%s'", player.Name, message)
-		
+
 		-- Parse command
 		local command, semaphoreName = ParseCommand(message, player.Name)
-		
+
 		if command then
 			DebugPrint("Valid command detected from '%s'", player.Name)
 			-- If no semaphore specified, default to "Semaphore1"
 			local targetSemaphore = semaphoreName or "Semaphore1"
 			-- Process command
 			local success, result = ProcessCommand(command, targetSemaphore, player)
-			
+
 			-- Send feedback to player
 			if success then
 				DebugPrint("Command successful for player '%s': %s", player.Name, result or "no message")
@@ -717,7 +717,7 @@ for _, player in pairs(Players:GetPlayers()) do
 	DebugPrint("Setting up chat handler for existing player '%s'", player.Name)
 	player.Chatted:Connect(function(message)
 		DebugPrint("Player '%s' sent chat message: '%s'", player.Name, message)
-		
+
 		local command, semaphoreName = ParseCommand(message, player.Name)
 		if command then
 			DebugPrint("Valid command detected from '%s'", player.Name)
