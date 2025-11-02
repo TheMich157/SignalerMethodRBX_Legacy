@@ -192,11 +192,11 @@ local function CreateControlButton(name, text, color, position, size)
 	button.TextScaled = true
 	button.Font = Enum.Font.GothamBold
 	button.Parent = buttonsFrame
-	
+
 	local btnCorner = Instance.new("UICorner")
 	btnCorner.CornerRadius = UDim.new(0, 8)
 	btnCorner.Parent = button
-	
+
 	-- Hover effect
 	button.MouseEnter:Connect(function()
 		local r, g, b = color.R * 255, color.G * 255, color.B * 255
@@ -212,7 +212,7 @@ local function CreateControlButton(name, text, color, position, size)
 		)
 		tween:Play()
 	end)
-	
+
 	button.MouseLeave:Connect(function()
 		local tween = TweenService:Create(
 			button,
@@ -221,7 +221,7 @@ local function CreateControlButton(name, text, color, position, size)
 		)
 		tween:Play()
 	end)
-	
+
 	-- Click effect
 	button.MouseButton1Down:Connect(function()
 		local tween = TweenService:Create(
@@ -231,7 +231,7 @@ local function CreateControlButton(name, text, color, position, size)
 		)
 		tween:Play()
 	end)
-	
+
 	button.MouseButton1Up:Connect(function()
 		local tween = TweenService:Create(
 			button,
@@ -240,7 +240,7 @@ local function CreateControlButton(name, text, color, position, size)
 		)
 		tween:Play()
 	end)
-	
+
 	return button
 end
 
@@ -326,7 +326,7 @@ local function UpdateStatus(state)
 		["DOUBLE YELLOW"] = Color3.fromRGB(255, 220, 100),
 		["GREEN+YELLOW"] = Color3.fromRGB(100, 255, 150)
 	}
-	
+
 	statusText.Text = state
 	statusText.TextColor3 = colors[state] or Color3.fromRGB(255, 255, 255)
 end
@@ -346,7 +346,7 @@ local function SetActiveButton(button, stateText)
 		)
 		tween:Play()
 	end
-	
+
 	-- Highlight active button
 	if button then
 		activeButton = button
@@ -359,7 +359,7 @@ local function SetActiveButton(button, stateText)
 		)
 		tween:Play()
 	end
-	
+
 	UpdateStatus(stateText)
 end
 
@@ -367,21 +367,21 @@ end
 local function SendCommand(command, button, stateText)
 	-- Wait for RemoteEvent
 	local remoteEvent = ReplicatedStorage:WaitForChild("TrainSignalCommand", 5)
-	
+
 	if not remoteEvent then
 		warn("[Dispatch Panel] RemoteEvent not found! Make sure TrainSignalRemoteHandler is running.")
 		return false
 	end
-	
+
 	-- Visual feedback: Set button as active
 	SetActiveButton(button, stateText)
-	
+
 	-- Send command directly via RemoteEvent
 	remoteEvent:FireServer(command, currentSemaphore)
-	
+
 	-- Play click sound effect (optional - uncomment if you have sound IDs)
 	-- game:GetService("SoundService"):PlaySound(soundId)
-	
+
 	return true
 end
 
@@ -392,7 +392,7 @@ local function CreateButtonHandler(button, command, stateText)
 		local originalX = button:GetAttribute("OriginalSizeX") or 130
 		local originalY = button:GetAttribute("OriginalSizeY") or 55
 		local originalSize = UDim2.new(0, originalX, 0, originalY)
-		
+
 		-- Click animation: shrink
 		local clickTween = TweenService:Create(
 			button,
@@ -400,7 +400,7 @@ local function CreateButtonHandler(button, command, stateText)
 			{Size = originalSize - UDim2.new(0, 8, 0, 8)}
 		)
 		clickTween:Play()
-		
+
 		clickTween.Completed:Connect(function()
 			-- Restore size
 			local restoreTween = TweenService:Create(
@@ -409,7 +409,7 @@ local function CreateButtonHandler(button, command, stateText)
 				{Size = originalSize}
 			)
 			restoreTween:Play()
-			
+
 			-- Send command (which will then highlight the button)
 			restoreTween.Completed:Wait()
 			SendCommand(command, button, stateText)
@@ -450,7 +450,7 @@ toggleButton.MouseButton1Click:Connect(function()
 	mainFrame.Visible = true
 	toggleButton.Visible = false
 	isVisible = true
-	
+
 	-- Animate panel opening
 	mainFrame.Size = UDim2.new(0, 0, 0, 0)
 	mainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
@@ -522,10 +522,10 @@ local function UpdateDropdownMenu()
 	for _, child in pairs(scrollFrame:GetChildren()) do
 		if child:IsA("TextButton") then
 			child:Destroy()
-			
+
 		end
 	end
-	
+
 	-- Add semaphore options
 	local itemHeight = 30
 	for i, semName in ipairs(availableSemaphores) do
@@ -540,11 +540,11 @@ local function UpdateDropdownMenu()
 		item.Font = Enum.Font.Gotham
 		item.ZIndex = 102
 		item.Parent = scrollFrame
-		
+
 		local itemCorner = Instance.new("UICorner")
 		itemCorner.CornerRadius = UDim.new(0, 4)
 		itemCorner.Parent = item
-		
+
 		-- Hover effect
 		item.MouseEnter:Connect(function()
 			if item.BackgroundColor3 ~= Color3.fromRGB(70, 100, 150) then
@@ -556,7 +556,7 @@ local function UpdateDropdownMenu()
 				tween:Play()
 			end
 		end)
-		
+
 		item.MouseLeave:Connect(function()
 			if item.BackgroundColor3 ~= Color3.fromRGB(70, 100, 150) then
 				local tween = TweenService:Create(
@@ -567,19 +567,19 @@ local function UpdateDropdownMenu()
 				tween:Play()
 			end
 		end)
-		
+
 		-- Click to select
 		item.MouseButton1Click:Connect(function()
 			currentSemaphore = semName
 			selectorDropdown.Text = semName
 			dropdownMenu.Visible = false
 			isDropdownOpen = false
-			
+
 			-- Request status for new semaphore
 			RequestInitialStatus()
 		end)
 	end
-	
+
 	-- Size is handled by UIListLayout connection above
 end
 
@@ -587,7 +587,7 @@ end
 selectorDropdown.MouseButton1Click:Connect(function()
 	isDropdownOpen = not isDropdownOpen
 	dropdownMenu.Visible = isDropdownOpen
-	
+
 	if isDropdownOpen then
 		-- Refresh list when opening
 		local listRemote   = ReplicatedStorage:WaitForChild("TrainSignalGetList", 10)
@@ -665,7 +665,7 @@ if remoteEvent then
 				-- Message is the state name directly: "STOP", "VMAX", "YELLOW", etc.
 				UpdateStatus(message)
 			end
-			
+
 			-- Success feedback: Brief flash on status display
 			local originalColor = statusText.TextColor3
 			local flashTween = TweenService:Create(
