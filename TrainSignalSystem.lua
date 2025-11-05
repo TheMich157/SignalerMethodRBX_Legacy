@@ -13,6 +13,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- ============================================================================
 -- DEBUG SETTINGS
 -- ============================================================================
+-- Disable chat-based signal commands (Dispatch UI only)
+local ENABLE_CHAT_COMMANDS: boolean = false
 
 local DEBUG_MODE = true  -- Set to false to disable debug messages
 
@@ -40,24 +42,30 @@ local Semaphore = {}
 Semaphore.__index = Semaphore
 
 -- Color constants
+-- Color constants
 local GREEN = Color3.fromRGB(0, 255, 0)
 local YELLOW = Color3.fromRGB(255, 255, 0)
 local RED = Color3.fromRGB(255, 0, 0)
 local BLACK = Color3.fromRGB(0, 0, 0)  -- Off
+local WHITE = Color3.fromRGB(255, 255, 255) -- NEW: substitute / lunar
 
 -- Create a new Semaphore instance
-function Semaphore.new(name, light1, light2, light3, light4)
+function Semaphore.new(name, light1, light2, light3, light4, light5) -- CHANGED (added light5)
 	local self = setmetatable({}, Semaphore)
 
 	self.Name = name or "Semaphore1"
-	self.Light1 = light1  -- Top light (Green when set)
-	self.Light2 = light2  -- Second light (Yellow)
-	self.Light3 = light3  -- Third light (Red - main stop signal)
-	self.Light4 = light4  -- Fourth light (Yellow)
-	self.CurrentState = "STOP"  -- Track current state
+	self.Light1 = light1  -- Green (top)
+	self.Light2 = light2  -- Yellow
+	self.Light3 = light3  -- Red (main stop)
+	self.Light4 = light4  -- Yellow
+	self.Light5 = light5  -- NEW: White (substitute / lunar)
+	self.CurrentState = "STOP"
 
+	-- NEW: blink controller
+	self._blinkTasks = {} -- array of {light=BasePart, flag={active=bool}}
 	return self
 end
+
 
 -- Set a light part to a specific color
 local function SetLightColor(light, color, semaphoreName, lightNumber)
@@ -76,6 +84,10 @@ local function SetLightColor(light, color, semaphoreName, lightNumber)
 		DebugWarn("Light '%s' is not anchored! Anchoring to prevent movement.", light.Name)
 		light.Anchored = true
 	end
+
+
+
+
 
 	-- Set part color and material
 	local colorName = "UNKNOWN"
@@ -105,14 +117,58 @@ local function SetLightColor(light, color, semaphoreName, lightNumber)
 	return true
 end
 
+
 -- Turn off all lights
 function Semaphore:TurnOffAllLights()
 	DebugPrint("Turning off all lights for semaphore '%s'", self.Name)
+	self:_stopAllBlinks() -- NEW
 	SetLightColor(self.Light1, BLACK, self.Name, 1)
 	SetLightColor(self.Light2, BLACK, self.Name, 2)
 	SetLightColor(self.Light3, BLACK, self.Name, 3)
 	SetLightColor(self.Light4, BLACK, self.Name, 4)
+	SetLightColor(self.Light5, BLACK, self.Name, 5) -- NEW
 end
+
+-- === Blink helpers (MUST be outside SetLightColor) ===
+function Semaphore:_stopBlink(light)
+	if not light then return end
+	for i = #self._blinkTasks, 1, -1 do
+		local e = self._blinkTasks[i]
+		if e.light == light then
+			e.flag.active = false
+			table.remove(self._blinkTasks, i)
+		end
+	end
+end
+
+function Semaphore:_stopAllBlinks()
+	for _, e in ipairs(self._blinkTasks) do
+		e.flag.active = false
+	end
+	self._blinkTasks = {}
+end
+
+function Semaphore:_startBlink(light, period)
+	if not light then return end
+	self:_stopBlink(light)
+	local flag = { active = true }
+	table.insert(self._blinkTasks, { light = light, flag = flag })
+	task.spawn(function()
+		local on = false
+		local p = period or ( (self.Light5 and self.Light5:GetAttribute("BlinkPeriod")) or 0.6 )
+		while flag.active do
+			on = not on
+			if on then
+				SetLightColor(light, WHITE, self.Name, 5)
+			else
+				SetLightColor(light, BLACK, self.Name, 5)
+			end
+			task.wait(p)
+		end
+		SetLightColor(light, BLACK, self.Name, 5)
+	end)
+end
+
 
 -- Command functions
 
@@ -167,6 +223,21 @@ function Semaphore:SetGreenYellow()
 	DebugPrint("Semaphore '%s' set to GREEN+YELLOW", self.Name)
 end
 
+-- !subs - Red stays on (Light3), Light5 blinks white
+function Semaphore:SetSubstitute()
+	DebugPrint("Executing SetSubstitute on semaphore '%s'", self.Name)
+	self:TurnOffAllLights()
+	SetLightColor(self.Light3, RED, self.Name, 3) -- red must be solid
+	if self.Light5 then
+		self:_startBlink(self.Light5, 0.6) -- blink white
+	else
+		DebugWarn("Semaphore '%s' has no Light5 for substitute signal", self.Name)
+	end
+	self.CurrentState = "SUBS"
+	DebugPrint("Semaphore '%s' set to SUBS (red + white blinking)", self.Name)
+end
+
+
 -- ============================================================================
 -- COMMAND HANDLER
 -- ============================================================================
@@ -207,7 +278,13 @@ local commandMap = {
 		method = "ListSemaphores",
 		description = "List all available semaphores",
 		aliases = {"ls", "semaphores"}
+	},
+	["subs"] = {
+		method = "SetSubstitute",
+		description = "Set substitute (red solid + white blinking on Light5)",
+		aliases = {"sub", "substitute"}
 	}
+
 }
 
 -- Store all semaphores
@@ -258,18 +335,22 @@ function InitializeSemaphores()
 			local light2 = child:FindFirstChild("Light2")
 			local light3 = child:FindFirstChild("Light3")
 			local light4 = child:FindFirstChild("Light4")
+			local light5 = child:FindFirstChild("Light5")
 
-			DebugPrint("Light search results for '%s' - Light1: %s, Light2: %s, Light3: %s, Light4: %s",
+			DebugPrint("Light search '%s' -> L1:%s L2:%s L3:%s L4:%s L5:%s",
 				semName,
-				light1 and light1.Name or "NOT FOUND",
-				light2 and light2.Name or "NOT FOUND",
-				light3 and light3.Name or "NOT FOUND",
-				light4 and light4.Name or "NOT FOUND")
+				light1 and light1.Name or "NONE",
+				light2 and light2.Name or "NONE",
+				light3 and light3.Name or "NONE",
+				light4 and light4.Name or "NONE",
+				light5 and light5.Name or "NONE")
 
-			if light1 and light2 and light3 and light4 then
+
+
+			if light1 and light2 and light3 and light4 and light5 then
 				-- Verify all lights are BaseParts
 				local allValid = true
-				for i, light in ipairs({light1, light2, light3, light4}) do
+				for i, light in ipairs({light1, light2, light3, light4, light5}) do
 					if not light:IsA("BasePart") then
 						DebugWarn("Light%d ('%s') is not a BasePart (type: %s) in '%s'", i, light.Name, light.ClassName, semName)
 						allValid = false
@@ -279,7 +360,7 @@ function InitializeSemaphores()
 				if allValid then
 					-- Safety: Ensure all lights are anchored to prevent movement
 					local unanchoredLights = {}
-					for i, light in ipairs({light1, light2, light3, light4}) do
+					for i, light in ipairs({light1, light2, light3, light4, light5}) do
 						if not light.Anchored then
 							light.Anchored = true
 							table.insert(unanchoredLights, light.Name)
@@ -292,7 +373,7 @@ function InitializeSemaphores()
 					end
 
 					-- Register semaphore by its folder/model name
-					semaphores[semName] = Semaphore.new(semName, light1, light2, light3, light4)
+					semaphores[semName] = Semaphore.new(semName, light1, light2, light3, light4, light5)
 
 					-- Register first semaphore as default if none exists
 					if not semaphores["default"] then
@@ -306,7 +387,8 @@ function InitializeSemaphores()
 					end
 
 					DebugPrint("Semaphore created successfully. Initializing to STOP state...")
-					semaphores[semName]:SetStop()  -- Initialize to red (stop) by default
+					semaphores[semName]:SetStop() 
+					-- Initialize to red (stop) by default
 					print(string.format("[Train Signal] ✓ %s initialized successfully (default: STOP)", semName))
 					DebugPrint("%s fully initialized and ready", semName)
 					semaphoreCount = semaphoreCount + 1
@@ -314,14 +396,14 @@ function InitializeSemaphores()
 					warn(string.format("[Train Signal] ✗ '%s' found but one or more lights are not BaseParts", semName))
 				end
 			else
-				DebugPrint("'%s' does not have all required lights (Light1-Light4)", semName)
+				DebugPrint("'%s' does not have all required lights (Light1-Light5)", semName)
 			end
 		end
 	end
 
 	if semaphoreCount == 0 then
 		warn("[Train Signal] ✗ No valid semaphores found in Semaphores folder!")
-		warn("[Train Signal] Expected structure: workspace.Semaphores.Semaphore1 (with Light1, Light2, Light3, Light4)")
+		warn("[Train Signal] Expected structure: workspace.Semaphores.Semaphore1 (with Light1, Light2, Light3, Light4, Light5)")
 	else
 		DebugPrint("Successfully initialized %d semaphore(s)", semaphoreCount)
 	end
@@ -393,7 +475,9 @@ local function ShowHelp(player)
 		"  !vmax                  - Set default signal to VMAX",
 		"  !vmax Semaphore1       - Set Semaphore1 to VMAX",
 		"  !stop Semaphore1       - Set Semaphore1 to STOP",
-		"  !yellow Semaphore1     - Set Semaphore1 to YELLOW"
+		"  !yellow Semaphore1     - Set Semaphore1 to YELLOW",
+		"  !subs / !sub        - Substitute: RED + WHITE blinking (Light5)"
+
 	}
 
 	-- List available semaphores (show unique ones only)
@@ -677,65 +761,38 @@ local function ProcessCommand(command, semaphoreName, player)
 end
 
 -- Chat command handler
-Players.PlayerAdded:Connect(function(player)
-	DebugPrint("Player '%s' joined - setting up chat handler", player.Name)
-
-	player.Chatted:Connect(function(message)
-		DebugPrint("Player '%s' sent chat message: '%s'", player.Name, message)
-
-		-- Parse command
-		local command, semaphoreName = ParseCommand(message, player.Name)
-
-		if command then
-			DebugPrint("Valid command detected from '%s'", player.Name)
-			-- If no semaphore specified, default to "Semaphore1"
-			local targetSemaphore = semaphoreName or "Semaphore1"
-			-- Process command
-			local success, result = ProcessCommand(command, targetSemaphore, player)
-
-			-- Send feedback to player
-			if success then
-				DebugPrint("Command successful for player '%s': %s", player.Name, result or "no message")
-				-- Success feedback
-				if result and result ~= "Help displayed" and result ~= "Semaphores listed" then
+if ENABLE_CHAT_COMMANDS then
+	Players.PlayerAdded:Connect(function(player)
+		player.Chatted:Connect(function(message)
+			local command, semaphoreName = ParseCommand(message, player.Name)
+			if command then
+				local targetSemaphore = semaphoreName or "Semaphore1"
+				local success, result = ProcessCommand(command, targetSemaphore, player)
+				if success and result and result ~= "Help displayed" and result ~= "Semaphores listed" then
 					SendMessage(player, "[Train Signal] " .. result, Color3.fromRGB(150, 255, 150))
+				elseif not success then
+					SendMessage(player, "[Train Signal] Error: " .. (result or "Unknown error"), Color3.fromRGB(255, 150, 150))
 				end
-			else
-				DebugWarn("Command failed for player '%s': %s", player.Name, result or "unknown error")
-				-- Error feedback
-				SendMessage(player, "[Train Signal] Error: " .. (result or "Unknown error"), Color3.fromRGB(255, 150, 150))
 			end
-		else
-			DebugPrint("No valid command detected in message from '%s'", player.Name)
-		end
+		end)
 	end)
-end)
 
--- Handle players already in game
-DebugPrint("Setting up chat handlers for players already in game (%d players)", #Players:GetPlayers())
-for _, player in pairs(Players:GetPlayers()) do
-	DebugPrint("Setting up chat handler for existing player '%s'", player.Name)
-	player.Chatted:Connect(function(message)
-		DebugPrint("Player '%s' sent chat message: '%s'", player.Name, message)
-
-		local command, semaphoreName = ParseCommand(message, player.Name)
-		if command then
-			DebugPrint("Valid command detected from '%s'", player.Name)
-			-- If no semaphore specified, default to "Semaphore1"
-			local targetSemaphore = semaphoreName or "Semaphore1"
-			local success, result = ProcessCommand(command, targetSemaphore, player)
-			if success then
-				DebugPrint("Command successful for player '%s': %s", player.Name, result or "no message")
-				if result and result ~= "Help displayed" and result ~= "Semaphores listed" then
+	for _, player in pairs(Players:GetPlayers()) do
+		player.Chatted:Connect(function(message)
+			local command, semaphoreName = ParseCommand(message, player.Name)
+			if command then
+				local targetSemaphore = semaphoreName or "Semaphore1"
+				local success, result = ProcessCommand(command, targetSemaphore, player)
+				if success and result and result ~= "Help displayed" and result ~= "Semaphores listed" then
 					SendMessage(player, "[Train Signal] " .. result, Color3.fromRGB(150, 255, 150))
+				elseif not success then
+					SendMessage(player, "[Train Signal] Error: " .. (result or "Unknown error"), Color3.fromRGB(255, 150, 150))
 				end
-			else
-				DebugWarn("Command failed for player '%s': %s", player.Name, result or "unknown error")
-				SendMessage(player, "[Train Signal] Error: " .. (result or "Unknown error"), Color3.fromRGB(255, 150, 150))
 			end
-		end
-	end)
+		end)
+	end
 end
+
 
 -- Initialize function (called automatically or can be called manually)
 local function InitializeSystem()
@@ -768,39 +825,37 @@ InitializeSystem()
 -- Export functions for programmatic use (accessible globally via _G or through RemoteHandler)
 _G.TrainSignalSystem = {
 	ProcessCommand = ProcessCommand,
-	AddSemaphore = function(name, light1, light2, light3, light4)
-		semaphores[name] = Semaphore.new(name, light1, light2, light3, light4)
-		semaphores[name]:SetStop()  -- Initialize to red (stop) by default
+
+	AddSemaphore = function(name, light1, light2, light3, light4, light5)
+		semaphores[name] = Semaphore.new(name, light1, light2, light3, light4, light5)
+		semaphores[name]:SetStop()
 		print("Semaphore added: " .. name .. " (default: stop)")
 	end,
+
 	GetSemaphore = function(name)
 		return semaphores[name]
 	end,
+
 	GetAllSemaphores = function()
-		-- Return copy of semaphores table for external access
 		local result = {}
 		for key, sem in pairs(semaphores) do
 			result[key] = sem
 		end
 		return result
 	end,
+
 	GetSemaphoreList = function()
-		-- Return unique semaphore names
-		local uniqueNames = {}
-		local seen = {}
-		for name, sem in pairs(semaphores) do
-			if not seen[sem.Name] then
+		local list, seen = {}, {}
+		for _, sem in pairs(semaphores) do
+			if sem and sem.Name and not seen[sem.Name] then
 				seen[sem.Name] = true
-				-- Prefer exact name match as primary
-				local displayName = name
-				if name ~= sem.Name and semaphores[sem.Name] then
-					displayName = sem.Name
-				end
-				table.insert(uniqueNames, displayName)
+				table.insert(list, sem.Name)
 			end
 		end
-		table.sort(uniqueNames)
-		return uniqueNames
+		table.sort(list)
+		return list
 	end
 }
 
+
+DebugPrint("Train Signal System module loaded and ready")
