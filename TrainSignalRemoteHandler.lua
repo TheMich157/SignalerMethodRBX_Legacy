@@ -1,26 +1,16 @@
 --!strict
 -- ServerScriptService/TrainSignalRemoteHandler.lua
+-- Adds emergency lock/cooldown + anti-abuse + normal command handling + broadcasts
 
-----------------------------------------------------------------
--- Services
-----------------------------------------------------------------
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 
-----------------------------------------------------------------
--- Wait for TrainSignalSystem exported in _G
-----------------------------------------------------------------
--- (daj systému chvíľu na init)
 task.wait(1)
 local TSS = (_G.TrainSignalSystem :: any)
-if not TSS then
-	warn("[TrainSignalRemoteHandler] _G.TrainSignalSystem not found; handler will still serve fallbacks.")
-end
 
-----------------------------------------------------------------
--- RemoteEvent helpers
-----------------------------------------------------------------
-local function getRemote(name: string): RemoteEvent
+-- Remote creator
+local function getRemote(name: string)
 	local existing = ReplicatedStorage:FindFirstChild(name)
 	if existing and existing:IsA("RemoteEvent") then
 		return existing
@@ -31,188 +21,241 @@ local function getRemote(name: string): RemoteEvent
 	return ev
 end
 
--- Single source of truth for event names
-local RE_Command     = getRemote("TrainSignalCommand")     -- client->server: (command, semaphoreName?)
-local RE_GetList     = getRemote("TrainSignalGetList")     -- client->server (request), server->client(list)
-local RE_GetStatus   = getRemote("TrainSignalGetStatus")   -- client->server (name?), server->client(name, state)
-local RE_StatusPush  = getRemote("TrainSignalStatus")      -- server->all: (name, state)  [broadcast]
+local RE_Command    = getRemote("TrainSignalCommand")
+local RE_GetList    = getRemote("TrainSignalGetList")
+local RE_GetStatus  = getRemote("TrainSignalGetStatus")
+local RE_StatusPush = getRemote("TrainSignalStatus")
+local RE_Emergency  = getRemote("TrainSignalEmergency") -- NEW: server->clients emergency events
 
-----------------------------------------------------------------
--- Safe wrappers over TrainSignalSystem
-----------------------------------------------------------------
--- Return list of semaphore names (always a flat {string})
-local function safeGetList(): {string}
-	-- 1) Prefer TSS.GetSemaphoreList()
-	local ok1, res1 = pcall(function()
-		if TSS and type(TSS.GetSemaphoreList) == "function" then
-			return TSS.GetSemaphoreList()
-		end
+-- Valid commands
+local VALID = {
+	stop=true, vmax=true, yellow=true, doubleyellow=true, greenyellow=true, subs=true,
+	s3=true, s4=true, s7=true, s8=true,
+	-- emergency handled specially (we accept it here)
+	emergency=true,
+}
+
+local STATE_NAME = {
+	stop="STOP", vmax="VMAX", yellow="YELLOW", doubleyellow="DOUBLE YELLOW",
+	greenyellow="GREEN+YELLOW", subs="SUBS",
+	s3="S3", s4="S4", s7="S7", s8="S8",
+	emergency="EMERGENCY",
+}
+
+-- Emergency config
+local lockDuration = 120        -- seconds (2 mins)
+local cooldownDuration = 300    -- seconds (5 mins)
+local abuseWindow = 600         -- seconds window to count abuses (10 mins)
+local abuseKickThreshold = 3    -- kicks after this many emergency triggers within abuseWindow
+
+-- state
+local isLockedUntil = 0         -- os.time() until which normal commands are blocked
+local cooldownUntil = 0         -- os.time() until which emergency cannot be triggered
+local perPlayerUses = {}        -- player.UserId -> {timestamps = {t1,t2,...}}
+
+-- helpers
+local function now() return os.time() end
+
+local function safeGetList()
+	local out = {}
+	local ok,res = pcall(function()
+		if TSS and type(TSS.GetSemaphoreList) == "function" then return TSS.GetSemaphoreList() end
 		return nil
 	end)
-	if ok1 and typeof(res1) == "table" then
-		local out: {string} = {}
-		for k, v in pairs(res1) do
-			if typeof(v) == "string" then
-				table.insert(out, v)
-			elseif typeof(k) == "string" then
-				table.insert(out, k) -- map -> keys
-			elseif typeof(v) == "Instance" then
-				table.insert(out, v.Name)
-			elseif typeof(v) == "table" and typeof((v :: any).Name) == "string" then
-				table.insert(out, (v :: any).Name)
-			end
-		end
-		if #out > 0 then return out end
+	if ok and typeof(res) == "table" then
+		for _,v in ipairs(res) do table.insert(out, tostring(v)) end
+		if #out>0 then return out end
 	end
-
-	-- 2) Fallback TSS.GetAllSemaphores() -> keys / .Name
-	local ok2, res2 = pcall(function()
-		if TSS and type(TSS.GetAllSemaphores) == "function" then
-			return TSS.GetAllSemaphores()
-		end
+	-- fallback to TSS.GetAllSemaphores
+	local ok2,res2 = pcall(function()
+		if TSS and type(TSS.GetAllSemaphores) == "function" then return TSS.GetAllSemaphores() end
 		return nil
 	end)
 	if ok2 and typeof(res2) == "table" then
-		local out2: {string} = {}
-		for k, v in pairs(res2) do
-			if typeof(k) == "string" then
-				table.insert(out2, k)
-			elseif typeof(v) == "table" and typeof((v :: any).Name) == "string" then
-				table.insert(out2, (v :: any).Name)
-			end
-		end
-		if #out2 > 0 then return out2 end
+		for k,v in pairs(res2) do table.insert(out, tostring(k)) end
+		if #out>0 then return out end
 	end
-
-	-- 3) Last fallback: workspace.Semaphores children names
-	local out3: {string} = {}
+	-- workspace fallback
 	local folder = Workspace:FindFirstChild("Semaphores")
 	if folder then
-		for _, inst in ipairs(folder:GetChildren()) do
-			table.insert(out3, inst.Name)
-		end
+		for _,c in ipairs(folder:GetChildren()) do table.insert(out, c.Name) end
 	end
-	return out3
+	return out
 end
 
--- Return current state of a semaphore (string), defaults to "STOP"
-local function safeGetState(name: string): string
-	local ok, state = pcall(function()
+local function safeGetState(name: string)
+	local state = "STOP"
+	local ok,res = pcall(function()
 		if TSS and type(TSS.GetSemaphore) == "function" then
 			local sem = TSS.GetSemaphore(name)
-			if sem and sem.CurrentState then
-				return sem.CurrentState
-			end
+			if sem and sem.CurrentState then return sem.CurrentState end
 		end
 		return nil
 	end)
-	if ok and typeof(state) == "string" then
-		return state :: string
-	end
-	return "STOP"
+	if ok and typeof(res) == "string" then state = res end
+	return state
 end
 
--- Resolve target semaphore name
-local function resolveTargetName(optName: string?): string
-	if optName and optName ~= "" then return optName end
-
-	-- Try explicit "default"
-	if TSS and type(TSS.GetSemaphore) == "function" then
-		local ok, def = pcall(function() return TSS.GetSemaphore("default") end)
-		if ok and def and typeof(def.Name) == "string" then
-			return def.Name
+local function setAllToStopAndLock(lockedBy: Player)
+	-- set every semaphore to STOP (call sem:SetStop if available)
+	if TSS and type(TSS.GetAllSemaphores) == "function" then
+		local ok, all = pcall(function() return TSS.GetAllSemaphores() end)
+		if ok and typeof(all) == "table" then
+			for k,v in pairs(all) do
+				if v and type(v.SetStop) == "function" then
+					pcall(function() v:SetStop() end)
+				elseif v and type(v.CurrentState) ~= "nil" then
+					-- best-effort: try to set fields
+					pcall(function() v.CurrentState = "STOP" end)
+				end
+				-- broadcast each sem state
+				RE_StatusPush:FireAllClients(k, "STOP")
+			end
 		end
 	end
-
-	-- Take first from list
-	local lst = safeGetList()
-	return lst[1] or "Semaphore1"
+	-- also broadcast an emergency start event with duration
+	RE_Emergency:FireAllClients("start", lockDuration, lockedBy and lockedBy.Name or "Server", now()+lockDuration)
 end
 
-----------------------------------------------------------------
--- Command whitelist & state mapping
-----------------------------------------------------------------
-local VALID: {[string]: boolean} = {
-	stop=true, vmax=true, yellow=true, doubleyellow=true, greenyellow=true, subs=true
-}
-local STATE_NAME: {[string]: string} = {
-	stop="STOP",
-	vmax="VMAX",
-	yellow="YELLOW",
-	doubleyellow="DOUBLE YELLOW",
-	greenyellow="GREEN+YELLOW",
-	subs="SUBS",
-}
+local function endEmergency()
+	-- broadcast end
+	RE_Emergency:FireAllClients("end", 0, nil, now())
+	-- set cooldown
+	cooldownUntil = now() + cooldownDuration
+	-- broadcast cooldown start
+	RE_Emergency:FireAllClients("cooldown", cooldownDuration, nil, cooldownUntil)
+end
 
-----------------------------------------------------------------
--- Handlers
-----------------------------------------------------------------
--- Client requests to change a signal
+-- record per-player use and detect abuse
+local function recordEmergencyUse(player: Player)
+	if not player then return false, "No player" end
+	local uid = player.UserId
+	perPlayerUses[uid] = perPlayerUses[uid] or {}
+	table.insert(perPlayerUses[uid], now())
+	-- prune old
+	local t = perPlayerUses[uid]
+	local cutoff = now() - abuseWindow
+	local i = 1
+	while i <= #t do
+		if t[i] < cutoff then table.remove(t, i) else i = i + 1 end
+	end
+	-- check threshold
+	if #t >= abuseKickThreshold then
+		-- kick player
+		pcall(function() player:Kick("Abuse: repeated Emergency usage") end)
+		perPlayerUses[uid] = {} -- reset
+		return true, "kicked"
+	end
+	return false, tostring(#t)
+end
+
+-- ===== Command handler =====
 RE_Command.OnServerEvent:Connect(function(player: Player, command: string, semaphoreName: string?)
+	command = tostring(command or ""):lower()
 	if not VALID[command] then
 		RE_Command:FireClient(player, "error", "Invalid command: "..tostring(command))
 		return
 	end
 
-	local target = resolveTargetName(semaphoreName)
+-- Emergency special-case
+if command == "emergency" then
+    -- už beží emergency? zakáž
+    if now() < isLockedUntil then
+        RE_Command:FireClient(player, "error", "Emergency already active.")
+        return
+    end
+    -- cooldown?
+    if now() < cooldownUntil then
+        RE_Command:FireClient(player, "error", "Emergency on cooldown. Wait " .. tostring(cooldownUntil - now()) .. "s.")
+        return
+    end
 
-	-- Execute system command
-	local okExec, errMsg = pcall(function()
-		if not (TSS and type(TSS.ProcessCommand) == "function") then
-			error("TrainSignalSystem.ProcessCommand missing")
-		end
-		return TSS.ProcessCommand(command, target, player)
-	end)
+    -- (ďalej nechaj ako máš)
+    local kicked, cnt = recordEmergencyUse(player)
+    if kicked then return end
 
-	local success: boolean = false
-	local resultMsg: any = nil
+    isLockedUntil = now() + lockDuration
+    setAllToStopAndLock(player)
 
-	if okExec then
-		-- If ProcessCommand returns (ok, msg), capture it
-		if typeof(errMsg) == "table" then
-			-- unlikely path, ignore
-			success = true
-		elseif typeof(errMsg) == "boolean" then
-			success = errMsg
-		else
-			-- Some implementations return nothing -> assume success
-			success = true
-		end
-	else
-		RE_Command:FireClient(player, "error", "Internal error: "..tostring(errMsg))
+    RE_Command:FireClient(player, "success", "Emergency started for " .. tostring(lockDuration) .. "s")
+    task.delay(lockDuration, function()
+        endEmergency()     -- nastaví cooldown a notifikuje klientov
+        isLockedUntil = 0
+    end)
+    return
+end
+	-- If we're currently locked, deny normal commands
+	if now() < isLockedUntil then
+		RE_Command:FireClient(player, "error", "System locked (Emergency).")
 		return
 	end
 
-	if not success then
-		RE_Command:FireClient(player, "error", tostring(resultMsg or "Failed"))
+	-- normal commands => proxy to TSS.ProcessCommand when possible, else mirror older behavior
+	if TSS and type(TSS.ProcessCommand) == "function" then
+		local ok, res = pcall(function()
+			return TSS.ProcessCommand(command, semaphoreName, player)
+		end)
+		if not ok then
+			RE_Command:FireClient(player, "error", "ProcessCommand error: "..tostring(res))
+			return
+		end
+		-- Try to determine state and broadcast
+		local state = STATE_NAME[command] or safeGetState(semaphoreName or "")
+		RE_StatusPush:FireAllClients(semaphoreName or "unknown", state)
+		RE_Command:FireClient(player, "success", state)
 		return
 	end
 
-	-- Prefer actual state from system (robust to custom logic)
-	local newState = safeGetState(target)
-	if newState == "STOP" then
-		-- fallback map (in case system didn't update yet)
-		newState = STATE_NAME[command] or "STOP"
+	-- fallback: use TSS GetSemaphore + method name mapping
+	if TSS and type(TSS.GetSemaphore) == "function" then
+		local sem = nil
+		local ok, s = pcall(function() return TSS.GetSemaphore(semaphoreName) end)
+		if ok then sem = s end
+		if not sem then
+			RE_Command:FireClient(player, "error", "Semaphore not found")
+			return
+		end
+		local methodName = nil
+		-- map command -> method name consistent with old mapping
+		local methodMap = {
+			stop="SetStop", vmax="SetVmax", yellow="SetYellow",
+			doubleyellow="SetDoubleYellow", greenyellow="SetGreenYellow",
+			subs="SetSubstitute",
+			s3="SetS3", s4="SetS4", s7="SetS7", s8="SetS8",
+		}
+		methodName = methodMap[command]
+		if not methodName or type(sem[methodName]) ~= "function" then
+			RE_Command:FireClient(player, "error", "Command not available: "..tostring(command))
+			return
+		end
+		local ok2, r2 = pcall(function() return sem[methodName](sem) end)
+		if not ok2 then
+			RE_Command:FireClient(player, "error", "Execution error: "..tostring(r2))
+			return
+		end
+		RE_StatusPush:FireAllClients(semaphoreName or sem.Name, STATE_NAME[command] or "UNKNOWN")
+		RE_Command:FireClient(player, "success", STATE_NAME[command] or "OK")
+		return
 	end
 
-	-- Confirm to the caller
-	RE_Command:FireClient(player, "success", newState)
-
-	-- Broadcast to everyone (keep all UIs in sync)
-	RE_StatusPush:FireAllClients(target, newState)
+	RE_Command:FireClient(player, "error", "No backend available")
 end)
 
--- Client asks for list
-RE_GetList.OnServerEvent:Connect(function(player: Player)
+-- ===== List handler =====
+RE_GetList.OnServerEvent:Connect(function(player)
 	local list = safeGetList()
 	RE_GetList:FireClient(player, list)
 end)
 
--- Client asks for one-shot status
-RE_GetStatus.OnServerEvent:Connect(function(player: Player, name: string?)
-	local target = resolveTargetName(name)
+-- ===== Status handler =====
+RE_GetStatus.OnServerEvent:Connect(function(player, name: string?)
+	local target = name
+	if not target or target == "" then
+		local lst = safeGetList()
+		target = lst[1] or "Semaphore1"
+	end
 	local state = safeGetState(target)
 	RE_GetStatus:FireClient(player, target, state)
 end)
 
-print("[TrainSignalRemoteHandler] ready (command/list/status + broadcast, safe wrappers, SUBS).")
+print("[TrainSignalRemoteHandler] ready (with Emergency lock/cooldown/anti-abuse).")
